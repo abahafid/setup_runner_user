@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# GitHub Self-Hosted Runner - User Setup Script
+# GitHub Self-Hosted Runner - User Setup Script (RHEL/CentOS only)
 # Usage: sudo bash setup_runner_user.sh <username> '<password>'
 # Example: sudo bash setup_runner_user.sh github-runner 'MyStr0ng@Pass!23'
 # NOTE: Always wrap the password in single quotes to avoid bash interpretation
@@ -51,31 +51,24 @@ fi
 # -----------------------------------------------------------------------------
 log_info "Validating password strength..."
 
-PASS_OK=true
-
 if [[ ${#PASSWORD} -lt 14 ]]; then
     log_error "Password must be at least 14 characters long (current: ${#PASSWORD})."
-    PASS_OK=false
 fi
 
 if ! echo "$PASSWORD" | grep -q '[A-Z]'; then
     log_error "Password must contain at least one uppercase letter (A-Z)."
-    PASS_OK=false
 fi
 
 if ! echo "$PASSWORD" | grep -q '[a-z]'; then
     log_error "Password must contain at least one lowercase letter (a-z)."
-    PASS_OK=false
 fi
 
 if ! echo "$PASSWORD" | grep -q '[0-9]'; then
     log_error "Password must contain at least one digit (0-9)."
-    PASS_OK=false
 fi
 
 if ! echo "$PASSWORD" | grep -qP '[^a-zA-Z0-9]'; then
     log_error "Password must contain at least one special character (!@#\$%^&*+-=[]{}|;:,.<>?)."
-    PASS_OK=false
 fi
 
 log_success "Password meets all requirements."
@@ -100,7 +93,24 @@ echo "${USERNAME}:${PASSWORD}" | chpasswd
 log_success "Password set for '${USERNAME}'."
 
 # -----------------------------------------------------------------------------
-# 5. Remove from wheel group (no sudo)
+# 5. Disable forced password expiry on first login
+# -----------------------------------------------------------------------------
+# RHEL enforces password change on first login by default — this breaks
+# automated runners. We set the last password change to today so it's
+# treated as already changed and won't expire immediately.
+chage -d "$(date +%Y-%m-%d)" "$USERNAME"
+
+# Also set max password age to never expire (-1 = no expiry)
+chage -M -1 "$USERNAME"
+
+log_success "Password expiry disabled for '${USERNAME}'."
+
+# Confirm the password aging settings
+log_info "Password aging info for '${USERNAME}':"
+chage -l "$USERNAME" | sed 's/^/         /'
+
+# -----------------------------------------------------------------------------
+# 6. Remove from wheel group (no sudo)
 # -----------------------------------------------------------------------------
 if groups "$USERNAME" | grep -q '\bwheel\b'; then
     gpasswd -d "$USERNAME" wheel &>/dev/null
@@ -110,25 +120,24 @@ else
 fi
 
 # -----------------------------------------------------------------------------
-# 6. Verify no sudo rights
+# 7. Verify no sudo rights
 # -----------------------------------------------------------------------------
 SUDO_CHECK=$(sudo -l -U "$USERNAME" 2>&1 || true)
 if echo "$SUDO_CHECK" | grep -q "not allowed"; then
     log_success "'${USERNAME}' has no sudo rights. Confirmed."
 else
-    log_warn "Sudo check result: $SUDO_CHECK"
     log_warn "Please verify manually: sudo -l -U ${USERNAME}"
 fi
 
 # -----------------------------------------------------------------------------
-# 7. Set correct permissions on home directory
+# 8. Set correct permissions on home directory
 # -----------------------------------------------------------------------------
 HOME_DIR="/home/${USERNAME}"
 chmod 755 "$HOME_DIR"
 log_success "Home directory permissions set to 755: ${HOME_DIR}"
 
 # -----------------------------------------------------------------------------
-# 8. Create the actions-runner directory
+# 9. Create the actions-runner directory
 # -----------------------------------------------------------------------------
 RUNNER_DIR="${HOME_DIR}/actions-runner"
 if [[ ! -d "$RUNNER_DIR" ]]; then
@@ -139,30 +148,28 @@ else
 fi
 
 # -----------------------------------------------------------------------------
-# 9. Set ownership of the entire home directory
+# 10. Set ownership
 # -----------------------------------------------------------------------------
 chown -R "${USERNAME}:${USERNAME}" "$HOME_DIR"
 log_success "Ownership set to '${USERNAME}' for: ${HOME_DIR}"
 
 # -----------------------------------------------------------------------------
-# 10. Apply correct SELinux context (fixes systemd 203/EXEC error on RHEL)
+# 11. Apply correct SELinux context (fixes systemd 203/EXEC error on RHEL)
 # -----------------------------------------------------------------------------
-if command -v semanage &>/dev/null; then
-    semanage fcontext -a -t bin_t "${RUNNER_DIR}(/.*)?" 2>/dev/null || \
-    semanage fcontext -m -t bin_t "${RUNNER_DIR}(/.*)?"
-    restorecon -Rv "$RUNNER_DIR" &>/dev/null
-    log_success "SELinux context set to 'bin_t' for: ${RUNNER_DIR}"
-else
+log_info "Applying SELinux context..."
+if ! command -v semanage &>/dev/null; then
     log_warn "semanage not found. Installing policycoreutils-python-utils..."
     dnf install -y policycoreutils-python-utils &>/dev/null
-    semanage fcontext -a -t bin_t "${RUNNER_DIR}(/.*)?" 2>/dev/null || \
-    semanage fcontext -m -t bin_t "${RUNNER_DIR}(/.*)?"
-    restorecon -Rv "$RUNNER_DIR" &>/dev/null
-    log_success "SELinux context set to 'bin_t' for: ${RUNNER_DIR}"
+    log_success "policycoreutils-python-utils installed."
 fi
 
+semanage fcontext -a -t bin_t "${RUNNER_DIR}(/.*)?" 2>/dev/null || \
+semanage fcontext -m -t bin_t "${RUNNER_DIR}(/.*)?"
+restorecon -Rv "$RUNNER_DIR" &>/dev/null
+log_success "SELinux context set to 'bin_t' for: ${RUNNER_DIR}"
+
 # -----------------------------------------------------------------------------
-# 11. Final summary
+# 12. Final summary
 # -----------------------------------------------------------------------------
 echo ""
 echo "=============================================="
