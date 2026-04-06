@@ -77,14 +77,24 @@ log_info "Starting setup for runner user: '${USERNAME}'"
 echo "=============================================="
 
 # -----------------------------------------------------------------------------
-# 3. Create the user
+# 3. Create the user (force clean if exists without home dir)
 # -----------------------------------------------------------------------------
 if id "$USERNAME" &>/dev/null; then
-    log_warn "User '${USERNAME}' already exists. Skipping creation."
+    HOME_DIR="/home/${USERNAME}"
+    if [[ ! -d "$HOME_DIR" ]]; then
+        log_warn "User '${USERNAME}' exists but has no home directory. Deleting and recreating..."
+        userdel "$USERNAME" &>/dev/null || true
+        useradd -m -s /bin/bash "$USERNAME"
+        log_success "User '${USERNAME}' recreated with home directory."
+    else
+        log_warn "User '${USERNAME}' already exists with home directory. Skipping creation."
+    fi
 else
     useradd -m -s /bin/bash "$USERNAME"
     log_success "User '${USERNAME}' created."
 fi
+
+HOME_DIR="/home/${USERNAME}"
 
 # -----------------------------------------------------------------------------
 # 4. Set the password
@@ -95,17 +105,10 @@ log_success "Password set for '${USERNAME}'."
 # -----------------------------------------------------------------------------
 # 5. Disable forced password expiry on first login
 # -----------------------------------------------------------------------------
-# RHEL enforces password change on first login by default — this breaks
-# automated runners. We set the last password change to today so it's
-# treated as already changed and won't expire immediately.
 chage -d "$(date +%Y-%m-%d)" "$USERNAME"
-
-# Also set max password age to never expire (-1 = no expiry)
 chage -M -1 "$USERNAME"
-
 log_success "Password expiry disabled for '${USERNAME}'."
 
-# Confirm the password aging settings
 log_info "Password aging info for '${USERNAME}':"
 chage -l "$USERNAME" | sed 's/^/         /'
 
@@ -120,19 +123,18 @@ else
 fi
 
 # -----------------------------------------------------------------------------
-# 7. Verify no sudo rights
+# 7. Verify no sudo rights (using sudoers file directly — no password prompt)
 # -----------------------------------------------------------------------------
-SUDO_CHECK=$(sudo -l -U "$USERNAME" 2>&1 || true)
-if echo "$SUDO_CHECK" | grep -q "not allowed"; then
-    log_success "'${USERNAME}' has no sudo rights. Confirmed."
+if grep -q "^${USERNAME}" /etc/sudoers 2>/dev/null || \
+   grep -rq "^${USERNAME}" /etc/sudoers.d/ 2>/dev/null; then
+    log_warn "'${USERNAME}' has an entry in sudoers! Please review manually."
 else
-    log_warn "Please verify manually: sudo -l -U ${USERNAME}"
+    log_success "'${USERNAME}' has no sudo rights. Confirmed."
 fi
 
 # -----------------------------------------------------------------------------
 # 8. Set correct permissions on home directory
 # -----------------------------------------------------------------------------
-HOME_DIR="/home/${USERNAME}"
 chmod 755 "$HOME_DIR"
 log_success "Home directory permissions set to 755: ${HOME_DIR}"
 
